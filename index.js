@@ -82,7 +82,7 @@
 var CloudWatch = require('aws-sdk/clients/cloudwatch');
 const SummarySet = require('./src/summarySet');
 
-var _awsConfig = {region: 'us-east-1'};
+var _awsConfig = { region: 'us-east-1' };
 /**
  * setIndividialConfig sets the default configuration to use when creating AWS
  * metrics. It defaults to simply setting the AWS region to `us-east-1`, i.e.:
@@ -93,7 +93,7 @@ var _awsConfig = {region: 'us-east-1'};
  * @param {Object} config The AWS SDK configuration options one would like to set.
  */
 function initialize(config) {
-  _awsConfig = config;
+    _awsConfig = config;
 }
 
 const DEFAULT_METRIC_OPTIONS = {
@@ -102,9 +102,51 @@ const DEFAULT_METRIC_OPTIONS = {
   summaryInterval: 10000,
   sendCallback: () => {},
   maxCapacity: 20,
+  maxAwsMetricsPerPayload: 150,
   withTimestamp: false,
   storageResolution: undefined
 };
+
+/**
+ * isMatchingMetric returns whether two metrics are of matching types, which
+ * would mean they could be merged.
+ */
+function isMatchingMetric(a, b) {
+  if (a.MetricName !== b.MetricName) {
+    return false;
+  }
+
+  if (a.Unit !== b.Unit) {
+    return false;
+  }
+
+  // dimensions must be exactly the same, including order
+
+  if (a.Dimensions.length !== b.Dimensions.length) {
+    return false;
+  }
+
+  let i = 0;
+
+  for (; i < a.Dimensions.length; ++i) {
+    if (a.Dimensions[i].Name !== b.Dimensions[i].Name) {
+      break;
+    }
+
+    if (a.Dimensions[i].Value !== b.Dimensions[i].Value) {
+      break;
+    }
+  }
+
+  return i === a.Dimensions.length;
+}
+
+/**
+ * isMergableUnit returns whether the unit type is one that can be safely merged
+ */
+function isMergableUnit(type) {
+  return type === 'Count';
+}
 
 /**
  * Create a custom CloudWatch Metric object that sets pre-configured dimensions and allows for
@@ -128,18 +170,18 @@ function Metric(namespace, units, defaultDimensions, options) {
   self.namespace = namespace;
   self.units = units;
   self.defaultDimensions = defaultDimensions || [];
-  self.options = Object.assign({}, DEFAULT_METRIC_OPTIONS, options);
+  self.options = Object.assign(options || {}, DEFAULT_METRIC_OPTIONS);
   self._storedMetrics = [];
-  this._summaryData = new Map();
+  self._summaryData = new Map();
 
   if (self.options.enabled) {
     self._interval = setInterval(() => {
       self._sendMetrics();
     }, self.options.sendInterval);
 
-    this._summaryInterval = setInterval(() => {
-      this._summarizeMetrics();
-    }, this.options.summaryInterval);
+    self._summaryInterval = setInterval(() => {
+      self._summarizeMetrics();
+    }, self.options.summaryInterval);    
   }
 }
 
@@ -161,14 +203,24 @@ Metric.prototype.put = function(value, metricName, additionalDimensions) {
       Unit: self.units,
       Value: value
     };
-    if (this.options.withTimestamp) {
+    if (self.options.withTimestamp) {
       payload.Timestamp = new Date().toISOString();
     }
-    if (this.options.storageResolution) {
-      payload.StorageResolution = this.options.storageResolution;
+    if (self.options.storageResolution) {
+      payload.StorageResolution = self.options.storageResolution;
     }
 
-    self._storedMetrics.push(payload);
+    if (isMergableUnit(self.units)) {
+      // Count metrics can be safely aggregated to reduce the number of metrics being sent
+      const existingMetric = self._storedMetrics.find(isMatchingMetric.bind(null, payload));
+      if (existingMetric) {
+        existingMetric.Value += payload.Value;
+      } else {
+        self._storedMetrics.push(payload);
+      }
+    } else {
+      self._storedMetrics.push(payload);
+    }
 
     // We need to see if we're at our maxCapacity, if we are - then send the
     // metrics now.
@@ -179,7 +231,6 @@ Metric.prototype.put = function(value, metricName, additionalDimensions) {
         self._sendMetrics();
       }, self.options.sendInterval);
     }
-  }
 };
 
 /**
@@ -219,7 +270,7 @@ Metric.prototype.summaryPut = function(value, metricName, additionalDimensions =
  *    time.
  */
 Metric.prototype.sample = function(value, metricName, additionalDimensions, sampleRate) {
-  if (Math.random() < sampleRate) this.put(value, metricName, additionalDimensions);
+    if (Math.random() < sampleRate) this.put(value, metricName, additionalDimensions);
 };
 
 /**
@@ -231,16 +282,22 @@ Metric.prototype.sample = function(value, metricName, additionalDimensions, samp
  */
 Metric.prototype._sendMetrics = function() {
   var self = this;
-  // NOTE: this would be racy except that NodeJS is single threaded.
-  const dataPoints = self._storedMetrics;
-  self._storedMetrics = [];
 
+  // NOTE: this would be racy except that NodeJS is single threaded.
+
+  // AWS has a limit on the number of MetricData elements it can receive at once
+  // https://docs.aws.amazon.com/AmazonCloudWatch/latest/APIReference/API_PutMetricData.html
+  const dataPoints = self._storedMetrics.splice(0, self.options.maxAwsMetricsPerPayload);
   if (!dataPoints || !dataPoints.length) return;
 
-  self.cloudwatch.putMetricData({
-    MetricData: dataPoints,
-    Namespace: self.namespace
-  }, self.options.sendCallback);
+    // AWS cannot take more than 20 MetricData elements at once
+    const dataPoints = self._storedMetrics.splice(0, 20);
+    if (_.isEmpty(dataPoints)) return;
+
+    self.cloudwatch.putMetricData({
+        MetricData: dataPoints,
+        Namespace: self.namespace
+    }, self.options.sendCallback);
 };
 
 /**
