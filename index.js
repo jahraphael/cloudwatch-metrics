@@ -102,10 +102,16 @@ const DEFAULT_METRIC_OPTIONS = {
   summaryInterval: 10000,
   sendCallback: () => {},
   maxCapacity: 20,
-  maxAwsMetricsPerPayload: 150,
   withTimestamp: false,
   storageResolution: undefined
 };
+
+// As per CloudWatch Service Quotas: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/cloudwatch_limits.html
+//
+// 20/PutMetricData request.
+// A MetricDatum object can contain a single value or a StatisticSet object representing many values. This quota cannot be changed.
+//
+const MAX_AWS_METRICDATUM_ITEMS = 20;
 
 /**
  * isMatchingMetric returns whether two metrics are of matching types, which
@@ -170,7 +176,7 @@ function Metric(namespace, units, defaultDimensions, options) {
   self.namespace = namespace;
   self.units = units;
   self.defaultDimensions = defaultDimensions || [];
-  self.options = Object.assign(options, DEFAULT_METRIC_OPTIONS);
+  self.options = Object.assign({}, DEFAULT_METRIC_OPTIONS, options);
   self._storedMetrics = [];
   self._summaryData = new Map();
 
@@ -286,15 +292,14 @@ Metric.prototype._sendMetrics = function() {
 
   // NOTE: this would be racy except that NodeJS is single threaded.
 
-  // AWS has a limit on the number of MetricData elements it can receive at once
-  // https://docs.aws.amazon.com/AmazonCloudWatch/latest/APIReference/API_PutMetricData.html
-  const dataPoints = self._storedMetrics.splice(0, self.options.maxAwsMetricsPerPayload);
-  if (!dataPoints || !dataPoints.length) return;
-
-  self.cloudwatch.putMetricData({
-    MetricData: dataPoints,
-    Namespace: self.namespace
-  }, self.options.sendCallback);
+  // flush all the metrics but chunked as per AWS max payload sizes
+  while (self._storedMetrics.length > 0) {
+    const dataPoints = self._storedMetrics.splice(0, MAX_AWS_METRICDATUM_ITEMS);
+    self.cloudwatch.putMetricData({
+      MetricData: dataPoints,
+      Namespace: self.namespace
+    }, self.options.sendCallback);
+  }
 };
 
 /**
