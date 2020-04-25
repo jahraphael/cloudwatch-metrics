@@ -82,7 +82,7 @@
 var CloudWatch = require('aws-sdk/clients/cloudwatch');
 const SummarySet = require('./src/summarySet');
 
-var _awsConfig = { region: 'us-east-1' };
+var _awsConfig = {region: 'us-east-1'};
 /**
  * setIndividialConfig sets the default configuration to use when creating AWS
  * metrics. It defaults to simply setting the AWS region to `us-east-1`, i.e.:
@@ -93,7 +93,7 @@ var _awsConfig = { region: 'us-east-1' };
  * @param {Object} config The AWS SDK configuration options one would like to set.
  */
 function initialize(config) {
-    _awsConfig = config;
+  _awsConfig = config;
 }
 
 const DEFAULT_METRIC_OPTIONS = {
@@ -170,7 +170,7 @@ function Metric(namespace, units, defaultDimensions, options) {
   self.namespace = namespace;
   self.units = units;
   self.defaultDimensions = defaultDimensions || [];
-  self.options = Object.assign(options || {}, DEFAULT_METRIC_OPTIONS);
+  self.options = Object.assign(options, DEFAULT_METRIC_OPTIONS);
   self._storedMetrics = [];
   self._summaryData = new Map();
 
@@ -181,7 +181,7 @@ function Metric(namespace, units, defaultDimensions, options) {
 
     self._summaryInterval = setInterval(() => {
       self._summarizeMetrics();
-    }, self.options.summaryInterval);    
+    }, self.options.summaryInterval);
   }
 }
 
@@ -231,6 +231,7 @@ Metric.prototype.put = function(value, metricName, additionalDimensions) {
         self._sendMetrics();
       }, self.options.sendInterval);
     }
+  }
 };
 
 /**
@@ -270,7 +271,7 @@ Metric.prototype.summaryPut = function(value, metricName, additionalDimensions =
  *    time.
  */
 Metric.prototype.sample = function(value, metricName, additionalDimensions, sampleRate) {
-    if (Math.random() < sampleRate) this.put(value, metricName, additionalDimensions);
+  if (Math.random() < sampleRate) this.put(value, metricName, additionalDimensions);
 };
 
 /**
@@ -290,14 +291,10 @@ Metric.prototype._sendMetrics = function() {
   const dataPoints = self._storedMetrics.splice(0, self.options.maxAwsMetricsPerPayload);
   if (!dataPoints || !dataPoints.length) return;
 
-    // AWS cannot take more than 20 MetricData elements at once
-    const dataPoints = self._storedMetrics.splice(0, 20);
-    if (_.isEmpty(dataPoints)) return;
-
-    self.cloudwatch.putMetricData({
-        MetricData: dataPoints,
-        Namespace: self.namespace
-    }, self.options.sendCallback);
+  self.cloudwatch.putMetricData({
+    MetricData: dataPoints,
+    Namespace: self.namespace
+  }, self.options.sendCallback);
 };
 
 /**
